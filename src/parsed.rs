@@ -431,9 +431,15 @@ impl From<uuid::Error> for EventParseError {
 }
 
 impl ParsedEventData {
-    fn parse_efi_text(mut data: &[u8], settings: &ParseSettings) -> Result<ParsedEventData, EventParseError> {
-        if settings.workaround_string_00af && data[data.len()-2] == 0x00 && data[data.len()-1] == 0xaf {
-            data = &data[..data.len()-1];
+    fn parse_efi_text(
+        mut data: &[u8],
+        settings: &ParseSettings,
+    ) -> Result<ParsedEventData, EventParseError> {
+        if settings.workaround_string_00af
+            && data[data.len() - 2] == 0x00
+            && data[data.len() - 1] == 0xaf
+        {
+            data = &data[..data.len() - 1];
         }
 
         Ok(ParsedEventData::Text(
@@ -523,6 +529,7 @@ impl ParsedEventData {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct EfiSpecId {
     pub(crate) platform_class: u32,

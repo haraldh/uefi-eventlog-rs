@@ -4,7 +4,7 @@ use std::{env, fs::File};
 use thiserror::Error;
 use tpmless_tpm2::PcrExtender;
 
-use uefi_eventlog::{Event, Parser, ParseSettings, DigestVerificationStatus};
+use uefi_eventlog::{DigestVerificationStatus, Event, ParseSettings, Parser};
 
 #[derive(Debug, Error)]
 enum ToolError {
@@ -66,6 +66,8 @@ fn main() -> Result<(), ToolError> {
 
         let any_invalid = parser.any_invalid();
 
+        let events = events.into_iter().filter(|e| e.pcr_index == 1).collect();
+
         if print_output_yaml {
             serde_yaml::to_writer(
                 std::io::stdout(),
@@ -80,7 +82,6 @@ fn main() -> Result<(), ToolError> {
             eprintln!("CAUTION: Invalid PCR values encountered!");
             any_failures = true;
         }
-
     }
 
     if any_failures {

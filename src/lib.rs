@@ -2,7 +2,7 @@ use std::io::Read;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use fallible_iterator::FallibleIterator;
-use log::{info, trace};
+use log::{error, info, trace};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use openssl::{hash::hash, memcmp};
@@ -16,7 +16,8 @@ fn serialize_as_base64<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error
 where
     S: serde::Serializer,
 {
-    serializer.serialize_str(&base64::encode(bytes))
+    use base64::{engine::general_purpose, Engine as _};
+    serializer.serialize_str(&general_purpose::STANDARD.encode(&bytes))
 }
 
 #[derive(Error, Debug)]
@@ -56,6 +57,7 @@ enum LogType {
 }
 
 const EFI_EVENT_BASE: u32 = 0x80000000;
+#[allow(non_local_definitions)]
 #[derive(Debug, PartialEq, FromPrimitive, Copy, Clone)]
 #[repr(u32)]
 enum KnownEventType {
@@ -90,6 +92,8 @@ enum KnownEventType {
     EFIAction = EFI_EVENT_BASE + 0x7,
     EFIPlatformFirmwareBlob = EFI_EVENT_BASE + 0x8,
     EFIHandoffTables = EFI_EVENT_BASE + 0x9,
+    EFIPlatformFirmwareBlob2 = EFI_EVENT_BASE + 0xA,
+    EFIHandoffTables2 = EFI_EVENT_BASE + 0xB,
     EFIVariableAuthority = EFI_EVENT_BASE + 0xE0,
 }
 
@@ -128,9 +132,10 @@ pub enum EventType {
     EFIAction,
     EFIPlatformFirmwareBlob,
     EFIHandoffTables,
+    EFIPlatformFirmwareBlob2,
+    EFIHandoffTables2,
     EFIVariableAuthority,
 
-    // Others
     Unknown(u32),
 }
 
@@ -183,6 +188,8 @@ impl EventType {
             EventType::EFIAction => KnownEventType::EFIAction,
             EventType::EFIPlatformFirmwareBlob => KnownEventType::EFIPlatformFirmwareBlob,
             EventType::EFIHandoffTables => KnownEventType::EFIHandoffTables,
+            EventType::EFIPlatformFirmwareBlob2 => KnownEventType::EFIPlatformFirmwareBlob2,
+            EventType::EFIHandoffTables2 => KnownEventType::EFIHandoffTables2,
             EventType::EFIVariableAuthority => KnownEventType::EFIVariableAuthority,
             EventType::Unknown(_) => return None,
         })
@@ -220,6 +227,8 @@ impl From<KnownEventType> for EventType {
             KnownEventType::EFIAction => EventType::EFIAction,
             KnownEventType::EFIPlatformFirmwareBlob => EventType::EFIPlatformFirmwareBlob,
             KnownEventType::EFIHandoffTables => EventType::EFIHandoffTables,
+            KnownEventType::EFIPlatformFirmwareBlob2 => EventType::EFIPlatformFirmwareBlob2,
+            KnownEventType::EFIHandoffTables2 => EventType::EFIHandoffTables2,
             KnownEventType::EFIVariableAuthority => EventType::EFIVariableAuthority,
         }
     }
@@ -228,7 +237,7 @@ impl From<KnownEventType> for EventType {
 #[derive(Debug, Serialize)]
 pub struct Digest {
     method: DigestAlgorithm,
-    #[serde(serialize_with = "serialize_as_base64")]
+    #[serde(with = "hex::serde")]
     digest: Vec<u8>,
 }
 
@@ -277,6 +286,9 @@ impl Event {
             // These EFI values we don't verify but TODO
             EventType::EFIHandoffTables => None,
             EventType::EFIVariableBoot => None,
+            EventType::PlatformConfigFlags => None,
+            EventType::EFIPlatformFirmwareBlob2 => None,
+            EventType::EFIHandoffTables2 => None,
 
             // Grub
             EventType::IPL => {
@@ -334,7 +346,6 @@ impl Default for ParseSettings {
     fn default() -> ParseSettings {
         ParseSettings {
             workaround_string_00af: false,
-
         }
     }
 }
@@ -354,7 +365,7 @@ pub struct Parser<'set, R: Read> {
     reader: R,
     logtype: Option<LogType>,
     log_info: Option<parsed::EfiSpecId>,
-    last_error: Option<Error>,
+    //last_error: Option<Error>,
     pcr_extender: PcrExtender,
     any_invalid: bool,
 
@@ -368,13 +379,14 @@ impl<'set, R: Read> Parser<'set, R> {
             reader,
             logtype: None,
             log_info: None,
-            last_error: None,
+            //last_error: None,
             any_invalid: false,
             pcr_extender: PcrExtenderBuilder::new()
-                .add_digest_method(DigestAlgorithm::Sha1)
-                .add_digest_method(DigestAlgorithm::Sha256)
+                //.add_digest_method(DigestAlgorithm::Sha1)
+                //.add_digest_method(DigestAlgorithm::Sha256)
                 .add_digest_method(DigestAlgorithm::Sha384)
-                .add_digest_method(DigestAlgorithm::Sha512)
+                //.add_digest_method(DigestAlgorithm::Sha512)
+                .set_num_pcrs(4)
                 .build(),
 
             settings,
@@ -450,6 +462,12 @@ impl<R: Read> Parser<'_, R> {
         // PCR Index
         let pcr_index = self.reader.read_u32::<LittleEndian>().map_err(map_eof)?;
 
+        if pcr_index == u32::MAX {
+            return Err(Error::Eof);
+        }
+
+        let pcr_index = pcr_index - 1;
+
         // Event Type
         let event_type = self.reader.read_u32::<LittleEndian>()?;
         let event_type = EventType::from(event_type);
@@ -484,7 +502,7 @@ impl<R: Read> Parser<'_, R> {
         self.reader.read_exact(&mut eventbuf)?;
 
         trace!(
-            "Parsing event of type {:?}, size {:?}, PCR {}",
+            "Parsing event of type {:?}, size {:?}, RTMR {}",
             event_type,
             event_size,
             pcr_index
